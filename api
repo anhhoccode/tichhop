@@ -1,0 +1,152 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using SaleManagementAPI.Data;
+using SaleManagementAPI.Models;
+using SaleManagementAPI.DTOs;
+
+namespace SaleManagementAPI.Controllers
+{
+    [ApiController]
+    [Route("api/products")]
+    public class ProductsController : ControllerBase
+    {
+        private readonly AppDbContext _db;
+
+        public ProductsController(AppDbContext db)
+        {
+            _db = db;
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetProducts()
+        {
+            var products = await _db.Products
+                .Include(p => p.Brand)
+                .Select(p => new ProductResponseDTO
+                {
+                    Id = p.Id,
+                    ProductName = p.ProductName,
+                    Price = p.Price,
+                    Stock = p.Stock,
+                    BrandName = p.Brand.BrandName
+                })
+                .ToListAsync();
+
+            return Ok(products);
+        }
+
+        [HttpGet("{id}")]
+        public async Task<IActionResult> GetProduct(int id)
+        {
+            var product = await _db.Products
+                .Include(p => p.Brand)
+                .Where(p => p.Id == id)
+                .Select(p => new ProductResponseDTO
+                {
+                    Id = p.Id,
+                    ProductName = p.ProductName,
+                    Price = p.Price,
+                    Stock = p.Stock,
+                    BrandName = p.Brand.BrandName
+                })
+                .FirstOrDefaultAsync();
+
+            if (product == null)
+                return NotFound();
+
+            return Ok(product);
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> CreateProduct(ProductCreateDTO model)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            bool exists = await _db.Products
+                .AnyAsync(p => p.ProductName == model.ProductName
+                            && p.BrandId == model.BrandId);
+
+            if (exists)
+                return Conflict("Product already exists in this brand");
+
+            var product = new Product
+            {
+                ProductName = model.ProductName,
+                Price = model.Price,
+                Stock = model.Stock,
+                BrandId = model.BrandId,
+                IsAvailable = model.Stock > 0
+            };
+
+            _db.Products.Add(product);
+            await _db.SaveChangesAsync();
+
+            return CreatedAtAction(nameof(GetProduct), new { id = product.Id }, product);
+        }
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateProduct(int id, ProductCreateDTO model)
+        {
+            var existing = await _db.Products.FindAsync(id);
+
+            if (existing == null)
+                return NotFound();
+
+            if (model.Price < 0)
+                return BadRequest("Price cannot be negative");
+
+            existing.ProductName = model.ProductName;
+            existing.Price = model.Price;
+            existing.Stock = model.Stock;
+            existing.BrandId = model.BrandId;
+            existing.IsAvailable = model.Stock > 0;
+
+            await _db.SaveChangesAsync();
+
+            return Ok(existing);
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteProduct(int id)
+        {
+            var product = await _db.Products.FindAsync(id);
+
+            if (product == null)
+                return NotFound();
+
+            bool exists = await _db.OrderDetails
+                .AnyAsync(od => od.ProductId == id);
+
+            if (exists)
+                return Conflict("Cannot delete product already in orders");
+
+            _db.Products.Remove(product);
+            await _db.SaveChangesAsync();
+
+            return Ok();
+        }
+
+        [HttpGet("statistics/products-by-brand")]
+        public async Task<IActionResult> ProductsByBrand()
+        {
+            var result = await _db.Products
+                .GroupBy(p => p.Brand.BrandName)
+                .Select(g => new
+                {
+                    BrandName = g.Key,
+                    TotalProducts = g.Count()
+                })
+                .ToListAsync();
+
+            return Ok(result);
+        }
+
+        [HttpGet("statistics/total-stock")]
+        public async Task<IActionResult> TotalStock()
+        {
+            var total = await _db.Products.SumAsync(p => p.Stock);
+            return Ok(new { TotalStock = total });
+        }
+    }
+}
